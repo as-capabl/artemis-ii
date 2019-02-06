@@ -1,0 +1,6 @@
+.stack-work/
+artemis-ii.cabal
+*~
+.ghc.environment*
+dist*
+cabal.project*
