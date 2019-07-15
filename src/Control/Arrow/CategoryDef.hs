@@ -12,21 +12,23 @@ module
     Control.Arrow.CategoryDef
 where
 
-import qualified Prelude hiding (fst, snd)
-import qualified Control.Category as A
+import Prelude hiding (id, (.), fst, snd)
+import Control.Category
 import qualified Control.Arrow as A
+import Data.Void
 
 import Control.Categorical.Bifunctor
 import Control.Categorical.Object
 import Control.Category.Associative
 import Control.Category.Braided
 import Control.Category.Cartesian
+import Control.Category.Cartesian.Closed
 import Control.Category.Distributive
 import Control.Category.Monoidal
 
 class A.Arrow k => CategoryDef k where {}
 
--- (,) Part
+-- Arrow Part
 instance {-# Overlaps #-}
     CategoryDef k =>
     PFunctor (,) k k
@@ -81,3 +83,75 @@ instance {-# Overlaps #-}
     snd = A.arr snd
     (&&&) = (A.&&&)
 
+-- ArrowApply Part
+instance {-# Overlaps #-}
+    (CategoryDef k, A.ArrowApply k) =>
+    CCC k
+  where
+    type Exp k = k
+    apply = A.app
+    curry f = A.arr $ \x -> A.arr (\y -> (x, y)) >>> f  -- k (a, b) c -> k a (k b c)
+    -- curry f = proc x -> do { returnA $ proc y -> do { f -< (x, y) } }  
+    uncurry f = first f >>> apply
+    -- uncurry f = proc (x, y) -> do { g <- f -< x; g -<< y }
+
+-- ArrowChoice Part
+instance {-# Overlaps #-}
+    (CategoryDef k, A.ArrowChoice k) =>
+    PFunctor Either k k
+  where
+    first f = f A.+++ id
+
+instance {-# Overlaps #-}
+    (CategoryDef k, A.ArrowChoice k) =>
+    QFunctor Either k k
+  where
+    second f = id A.+++ f
+
+instance {-# Overlaps #-}
+    (CategoryDef k, A.ArrowChoice k) =>
+    Bifunctor Either k k k
+  where
+    bimap = (A.+++)
+
+instance {-# Overlaps #-}
+    (CategoryDef k, A.ArrowChoice k) =>
+    Associative k Either
+  where
+    associate = A.arr associate
+    disassociate = A.arr disassociate
+
+instance {-# Overlaps #-}
+    (CategoryDef k, A.ArrowChoice k) =>
+    Braided k Either
+  where
+    braid = A.arr braid
+
+instance {-# Overlaps #-}
+    (CategoryDef k, A.ArrowChoice k) =>
+    Symmetric k Either where {}
+
+instance {-# Overlaps #-}
+    (CategoryDef k, A.ArrowChoice k) =>
+    Monoidal k Either
+  where
+    type Id k Either = Void
+    idl = A.arr idl
+    idr = A.arr idr
+    coidl = A.arr coidl
+    coidr = A.arr coidr
+
+instance {-# Overlaps #-}
+    (CategoryDef k, A.ArrowChoice k) =>
+    CoCartesian k
+  where
+    type Sum k = Either
+    inl = A.arr inl
+    inr = A.arr inr
+    (|||) = (A.|||)
+
+instance {-# Overlaps #-}
+    (CategoryDef k, A.ArrowChoice k) =>
+    Distributive k
+  where
+    distribute = A.arr distribute

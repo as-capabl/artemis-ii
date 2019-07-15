@@ -14,11 +14,13 @@ import Data.Default
 import Control.Arrow.Alg
 import Control.Arrow.CategoryDef
 
+instance Monad m => CategoryDef (Kleisli m) where {}
+
 mainArrow :: Kleisli IO Int Int
 mainArrow = procA $ \x ->
   do
     y <- embA $ (*2) <<$>> refer x
-    embA $ (+) <<$>> refer x <<*>> refer y
+    embA      $ (+) <<$>> refer x <<*>> refer y
   where
     Use.IxMonad{..} = def
 
