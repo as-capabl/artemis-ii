@@ -83,6 +83,13 @@ instance {-# Overlaps #-}
     snd = A.arr snd
     (&&&) = (A.&&&)
 
+instance {-# Overlaps #-}
+    (Category k, CategoryDef k) =>
+    HasTerminalObject k
+  where
+    type Terminal k = ()
+    terminate = A.arr (const ())
+
 -- ArrowApply Part
 instance {-# Overlaps #-}
     (CategoryDef k, A.ArrowApply k) =>

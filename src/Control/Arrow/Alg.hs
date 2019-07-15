@@ -27,7 +27,7 @@ where
 
 import Prelude hiding (id, (.), fst, snd, uncurry)
 import Control.Category
-import Control.Arrow hiding (first, second, (&&&))
+import Control.Arrow hiding (first, second, (&&&), (***))
 import Control.Monad.Indexed
 import GHC.TypeLits
 import GHC.Exts
@@ -40,7 +40,6 @@ import Control.Category.Cartesian.Closed
 import Control.Category.Distributive
 import Control.Category.Monoidal
 import Data.Profunctor
-import Data.Profunctor.Strong
 
 data Available a = Available a
 data Consumed = Consumed
@@ -169,23 +168,23 @@ data ArrAlg ar cur next a
         ArrAlg ar cur' next q ->
         ArrAlg ar cur next b
 
-instance Arrow ar => IxFunctor (ArrAlg ar)
+instance Profunctor ar => IxFunctor (ArrAlg ar)
   where
-    imap f (ArrAlgPure p) = ArrAlgPure (arr f . p)
-    imap f (ArrAlg p b next) = ArrAlg p (arr f . b) next
+    imap f (ArrAlgPure p) = ArrAlgPure (rmap f p)
+    imap f (ArrAlg p b next) = ArrAlg p (rmap f b) next
 
-instance Arrow ar => IxPointed (ArrAlg ar)
+instance (Profunctor ar, Category ar) => IxPointed (ArrAlg ar)
   where
-    ireturn x = ArrAlgPure (arr (const x))
+    ireturn x = ArrAlgPure (rmap (const x) id)
 
-instance (Arrow ar, Cartesian' ar) => IxApplicative (ArrAlg ar)
+instance (Profunctor ar, Monoidal' ar) => IxApplicative (ArrAlg ar)
   where
     iap (ArrAlgPure p) (ArrAlgPure q) =
-        ArrAlgPure (p &&& q >>> arr (uncurry ($)))
+        ArrAlgPure (rmap (uncurry ($)) (coidl >>> bimap p q))
     iap (ArrAlgPure f) (ArrAlg p q next) =
-        ArrAlg p (coidl >>> f *** q >>> arr (uncurry ($))) next
+        ArrAlg p (rmap (uncurry ($)) (coidl >>> bimap f q)) next
     iap (ArrAlg p f next) mx =
-        ArrAlg p (disassociate >>> first f >>> arr (uncurry ($))) (imap (,) next `iap` mx)
+        ArrAlg p (rmap (uncurry ($)) (disassociate >>> first f)) (imap (,) next `iap` mx)
 
 data ArrCtx ar m n a
   where
