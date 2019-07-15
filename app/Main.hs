@@ -12,6 +12,7 @@ import Data.Functor.Indexed
 import qualified Language.Haskell.Rebindable as Use
 import Data.Default
 import Control.Arrow.Alg
+import Control.Arrow.CategoryDef
 
 mainArrow :: Kleisli IO Int Int
 mainArrow = procA $ \x ->
