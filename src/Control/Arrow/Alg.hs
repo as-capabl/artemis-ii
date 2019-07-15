@@ -25,12 +25,22 @@ module
       ) 
 where
 
-import Prelude hiding (id, (.))
+import Prelude hiding (id, (.), fst, snd, uncurry)
 import Control.Category
-import Control.Arrow
+import Control.Arrow hiding (first, second, (&&&))
 import Control.Monad.Indexed
 import GHC.TypeLits
 import GHC.Exts
+import Control.Categorical.Bifunctor
+import Control.Categorical.Object
+import Control.Category.Associative
+import Control.Category.Braided
+import Control.Category.Cartesian
+import Control.Category.Cartesian.Closed
+import Control.Category.Distributive
+import Control.Category.Monoidal
+import Data.Profunctor
+import Data.Profunctor.Strong
 
 data Available a = Available a
 data Consumed = Consumed
@@ -53,10 +63,14 @@ type family Flux' r m
     
 type Flux m = Flux' () m
 
+type Braided' k = Braided k (,)
+type Monoidal' k = (Monoidal k (,), Id k (,) ~ ())
+type Cartesian' k = (Cartesian k, Product k ~ (,), Id k (,) ~ ())
+
 class IsHistory' r t
   where
-    pushBackFlux :: Arrow ar => ar (a, Flux' r t) (Flux' r (PushBack (Available a) t))
-    braidOut :: Arrow ar => ar s (a, r) -> ar (Flux' s t) (a, Flux' r t) 
+    pushBackFlux :: Category ar => ar (a, Flux' r t) (Flux' r (PushBack (Available a) t))
+    braidOut :: Braided' ar => ar s (a, r) -> ar (Flux' s t) (a, Flux' r t) 
 
 type IsHistory t = IsHistory' () t
 
@@ -83,8 +97,8 @@ type family Compat a b :: Constraint
 class IsHistory' r hist => Causal' r m hist
   where
     type ConsumedHist r m hist :: *
-    getConsumed :: Arrow ar => ar (Flux' r hist) (VarType m, ConsumedFlux' r m hist)
-    getRefer :: Arrow ar => ar (Flux' r hist) (VarType m, Flux' r hist)
+    getConsumed :: (Braided' ar, Monoidal' ar) => ar (Flux' r hist) (VarType m, ConsumedFlux' r m hist)
+    getRefer :: Cartesian' ar => ar (Flux' r hist) (VarType m, Flux' r hist)
 
 type Causal = Causal' ()
 
@@ -139,18 +153,6 @@ class Causal (m :: *) (hist :: *)
     morphConsume :: Arrow ar => ar (Section hist) (VarType m, Section (ConsumedHist m hist))
 -}
 
-braid :: Arrow k => k (a, b) (b, a)
-braid = arr $ \(x, y) -> (y, x)
-
-associate :: Arrow k => k ((a, b), c) (a, (b, c))
-associate = arr $ \((x, y), z) -> (x, (y, z))
-
-disassociate :: Arrow k => k (a, (b, c)) ((a, b), c)
-disassociate = arr $ \(x, (y, z)) -> ((x, y), z)
-
-diag :: Arrow k => k a (a, a)
-diag = arr $ \x -> (x, x)
-
 
 data ArrVar m a
   where
@@ -176,12 +178,12 @@ instance Arrow ar => IxPointed (ArrAlg ar)
   where
     ireturn x = ArrAlgPure (arr (const x))
 
-instance Arrow ar => IxApplicative (ArrAlg ar)
+instance (Arrow ar, Cartesian' ar) => IxApplicative (ArrAlg ar)
   where
     iap (ArrAlgPure p) (ArrAlgPure q) =
         ArrAlgPure (p &&& q >>> arr (uncurry ($)))
     iap (ArrAlgPure f) (ArrAlg p q next) =
-        ArrAlg p (arr (\x -> ((), x)) >>> f *** q >>> arr (uncurry ($))) next
+        ArrAlg p (coidl >>> f *** q >>> arr (uncurry ($))) next
     iap (ArrAlg p f next) mx =
         ArrAlg p (disassociate >>> first f >>> arr (uncurry ($))) (imap (,) next `iap` mx)
 
@@ -214,16 +216,16 @@ instance IxMonad (ArrCtx ar)
 
 refer ::
     forall ar cur m a.
-    (Arrow ar, Causal m cur) =>
+    (Cartesian' ar, Causal m cur) =>
     ArrVar m a -> ArrAlg ar cur cur a
-refer ArrVar = ArrAlg (getRefer @() @m @cur) (arr fst) (ArrAlgPure id)
+refer ArrVar = ArrAlg (getRefer @() @m @cur) fst (ArrAlgPure id)
 
 
 consume ::
     forall ar cur m a.
-    (Arrow ar, Causal m cur) =>
+    (Braided' ar, Monoidal' ar, Causal m cur) =>
     ArrVar m a -> ArrAlg ar cur (ConsumedHist () m cur) a
-consume ArrVar = ArrAlg (getConsumed @() @m @cur) (arr fst) (ArrAlgPure id)
+consume ArrVar = ArrAlg (getConsumed @() @m @cur) idr (ArrAlgPure id)
 
 
 embA ::
@@ -235,16 +237,16 @@ embA alg = ArrCtx alg (ArrCtxPure ArrVar)
 
 procA ::
     forall ar cur n a b.
-    (Arrow ar, Causal (Available a, ()) cur, Causal n cur) =>
+    (Cartesian' ar, Causal (Available a, ()) cur, Causal n cur) =>
     (ArrVar (Available a, ()) a ->
         ArrCtx ar (Available a, ()) cur (ArrVar n b)) -> 
     ar a b
-procA fctx = arr (\x -> (x, ())) >>> elimCtx (fctx ArrVar)
+procA fctx = coidr >>> elimCtx (fctx ArrVar)
   where
     elimCtx ::
         forall m. ArrCtx ar m cur (ArrVar n b) ->
         ar (Flux m) b
-    elimCtx (ArrCtxPure ArrVar) = arr fst . (getConsumed @() @n @cur)
+    elimCtx (ArrCtxPure ArrVar) = fst . (getConsumed @() @n @cur)
     elimCtx (ArrCtx alg next) = elimAlgPB alg >>> elimCtx next 
 
     elimAlgPB ::
@@ -257,5 +259,5 @@ procA fctx = arr (\x -> (x, ())) >>> elimCtx (fctx ArrVar)
     elimAlg ::
         ArrAlg ar m m' c ->
         ar (Flux m) (c, Flux m')
-    elimAlg (ArrAlgPure p) = arr (\x -> ((), x)) >>> first p 
+    elimAlg (ArrAlgPure p) = coidl >>> first p 
     elimAlg (ArrAlg p b next) = p >>> second (elimAlg next) >>> disassociate >>> first b
