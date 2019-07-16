@@ -101,25 +101,6 @@ class IsHistory' r hist => Causal' r m hist
 
 type Causal = Causal' ()
 
-{-
-class BraidOut s r a m
-  where
-    type BraidOutS s r a m :: *
-    braidOutS :: Arrow ar => ar s (Flux' s m)
-    braidOutR :: Arrow ar => ar s (BraidOutS)
-
-instance BraidOut s r ()
-  where
-    braidOut = id
-
-instance BraidOut (a, (b, s)) (b, r) m => BraidOut (a, s) r (Available b, m)
-  where
-    braidOut = undefined
-
-instance BraidOut s r m => BraidOut s r (Consumed, m)
-  where
-    braidOut = undefined
--}
 instance (IsHistory' (a, r) hist, IsHistory' r hist) => Causal' r (Available a, ()) (Available a, hist)
   where
     type ConsumedHist r (Available a, ()) (Available a, hist) = hist
@@ -145,46 +126,24 @@ instance
 
 type ConsumedFlux' r m hist = Flux' r (ConsumedHist r m hist)
 
-{-
-class Causal (m :: *) (hist :: *)
-  where
-    morphRefer :: Arrow ar => ar (Section hist) (VarType m, Section hist)
-    morphConsume :: Arrow ar => ar (Section hist) (VarType m, Section (ConsumedHist m hist))
--}
-
 
 data ArrVar m a
   where
     ArrVar :: VarType m ~ a => ArrVar m a
 
-data ArrAlg ar cur next a
-  where
-    ArrAlgPure ::
-        ar () a ->
-        ArrAlg ar cur cur a
-    ArrAlg ::
-        ar (Flux cur) (p, Flux cur') ->
-        ar (p, q) b ->
-        ArrAlg ar cur' next q ->
-        ArrAlg ar cur next b
+newtype ArrAlg ar cur next a = ArrAlg (ar (Flux cur) (a, Flux next))
 
 instance Profunctor ar => IxFunctor (ArrAlg ar)
   where
-    imap f (ArrAlgPure p) = ArrAlgPure (rmap f p)
-    imap f (ArrAlg p b next) = ArrAlg p (rmap f b) next
+    imap f (ArrAlg p) = ArrAlg $ rmap (first f) p
 
 instance (Profunctor ar, Category ar) => IxPointed (ArrAlg ar)
   where
-    ireturn x = ArrAlgPure (rmap (const x) id)
+    ireturn x = ArrAlg (rmap (\y -> (x, y)) id)
 
 instance (Profunctor ar, Monoidal' ar) => IxApplicative (ArrAlg ar)
   where
-    iap (ArrAlgPure p) (ArrAlgPure q) =
-        ArrAlgPure (rmap (uncurry ($)) (coidl >>> bimap p q))
-    iap (ArrAlgPure f) (ArrAlg p q next) =
-        ArrAlg p (rmap (uncurry ($)) (coidl >>> bimap f q)) next
-    iap (ArrAlg p f next) mx =
-        ArrAlg p (rmap (uncurry ($)) (disassociate >>> first f)) (imap (,) next `iap` mx)
+    iap (ArrAlg p) (ArrAlg q) = ArrAlg $ rmap (first $ uncurry ($)) (p >>> second q >>> disassociate)
 
 data ArrCtx ar m n a
   where
@@ -217,14 +176,14 @@ refer ::
     forall ar cur m a.
     (Cartesian' ar, Causal m cur) =>
     ArrVar m a -> ArrAlg ar cur cur a
-refer ArrVar = ArrAlg (getRefer @() @m @cur) fst (ArrAlgPure id)
+refer ArrVar = ArrAlg (getRefer @() @m @cur)
 
 
 consume ::
     forall ar cur m a.
     (Braided' ar, Monoidal' ar, Causal m cur) =>
     ArrVar m a -> ArrAlg ar cur (ConsumedHist () m cur) a
-consume ArrVar = ArrAlg (getConsumed @() @m @cur) idr (ArrAlgPure id)
+consume ArrVar = ArrAlg (getConsumed @() @m @cur)
 
 
 embA ::
@@ -253,10 +212,5 @@ procA fctx = coidr >>> elimCtx (fctx ArrVar)
         IsHistory m' =>
         ArrAlg ar m m' c ->
         ar (Flux m) (Flux (PushBack (Available c) m'))
-    elimAlgPB alg = elimAlg alg >>> pushBackFlux @() @m'
+    elimAlgPB (ArrAlg p) = p >>> pushBackFlux @() @m'
 
-    elimAlg ::
-        ArrAlg ar m m' c ->
-        ar (Flux m) (c, Flux m')
-    elimAlg (ArrAlgPure p) = coidl >>> first p 
-    elimAlg (ArrAlg p b next) = p >>> second (elimAlg next) >>> disassociate >>> first b
