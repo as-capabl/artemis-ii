@@ -66,10 +66,38 @@ type Braided' k = Braided k (,)
 type Monoidal' k = (Monoidal k (,), Id k (,) ~ ())
 type Cartesian' k = (Cartesian k, Product k ~ (,), Id k (,) ~ ())
 
+-- Selector ar fl fl' a ~ ar fl (a, fl')
+data Selector ar fl fl' a
+  where
+    SelIdl :: Selector ar fl fl ()
+    SelBraid ::
+        Braided' ar =>
+        Selector ar fl fl' a ->
+        Selector ar (b, fl) (b, fl') a
+    SelConsume ::
+        Selector ar (a, fl) fl a
+    SelRefer ::
+        ar b (a, b') ->
+        Selector ar (b, fl) (b', fl) a
+    SelCombine ::
+        Selector ar fl fl' a ->
+        Selector ar fl' fl'' b ->
+        Selector ar fl fl'' (a, b)
+
+runSelector :: Monoidal' ar => Selector ar fl fl' a -> ar fl (a, fl')
+runSelector (SelIdl) = coidl
+runSelector (SelBraid s) = second (runSelector s) >>> disassociate >>> first braid >>> associate
+runSelector (SelConsume) = id
+runSelector (SelRefer f) = first f >>> associate
+runSelector (SelCombine (SelBraid s) (SelBraid t)) =
+    second (runSelector (SelCombine s t)) >>> disassociate >>> first braid >>> associate
+runSelector (SelCombine s t) = runSelector s >>> second (runSelector t) >>> disassociate
+
+
 class IsHistory' r t
   where
     pushBackFlux :: Category ar => ar (a, Flux' r t) (Flux' r (PushBack (Available a) t))
-    braidOut :: Braided' ar => ar s (a, r) -> ar (Flux' s t) (a, Flux' r t) 
+    braidOut :: Braided' ar => Selector ar s r a -> Selector ar (Flux' s t) (Flux' r t) a
 
 type IsHistory t = IsHistory' () t
 
@@ -81,7 +109,7 @@ instance IsHistory' r ()
 instance IsHistory' (a, r) t => IsHistory' r (Available a, t)
   where
     pushBackFlux = pushBackFlux @(a, r) @t
-    braidOut f = braidOut @(a, r) @t (second f >>> disassociate >>> first braid >>> associate)
+    braidOut f = braidOut @(a, r) @t (SelBraid f)
 
 instance IsHistory' r t => IsHistory' r (Consumed, t)
   where
@@ -96,8 +124,8 @@ type family Compat a b :: Constraint
 class IsHistory' r hist => Causal' r m hist
   where
     type ConsumedHist r m hist :: *
-    getConsumed :: (Braided' ar, Monoidal' ar) => ar (Flux' r hist) (VarType m, ConsumedFlux' r m hist)
-    getRefer :: Cartesian' ar => ar (Flux' r hist) (VarType m, Flux' r hist)
+    getConsumed :: (Braided' ar, Monoidal' ar) => Selector ar (Flux' r hist) (ConsumedFlux' r m hist) (VarType m)
+    getRefer :: Cartesian' ar => Selector ar (Flux' r hist) (Flux' r hist) (VarType m)
 
 type Causal = Causal' ()
 
@@ -105,8 +133,8 @@ instance (IsHistory' (a, r) hist, IsHistory' r hist) => Causal' r (Available a, 
   where
     type ConsumedHist r (Available a, ()) (Available a, hist) = hist
     -- ar (Flux' (a, r) hist) (a, Flux' r hist)
-    getConsumed = braidOut @r @hist id
-    getRefer = braidOut @(a, r) @hist (first diag >>> associate)
+    getConsumed = braidOut @r @hist SelConsume
+    getRefer = braidOut @(a, r) @hist (SelRefer diag)
     
 instance
     (Causal' (a, r) (c, m) hist) =>
@@ -131,19 +159,31 @@ data ArrVar m a
   where
     ArrVar :: VarType m ~ a => ArrVar m a
 
-newtype ArrAlg ar cur next a = ArrAlg (ar (Flux cur) (a, Flux next))
+data ArrAlg ar cur cur' a
+  where
+    ArrAlg :: ar p a -> Selector ar (Flux cur) (Flux cur') p -> ArrAlg ar cur cur' a
+
+runAlg :: Monoidal' ar => ArrAlg ar cur cur' a -> ar (Flux cur) (a, Flux cur')
+runAlg (ArrAlg p sel) = runSelector sel >>> first p 
+{-
+curryAlg ::
+    (Symmetric ar, Monoidal ar, Compat h (Available a)) =>
+    ArrAlg ar (PushBack (Available a) cur) (PushBack h cur') b -> ArrAlg ar cur cur' (ar a b)
+-}
+
 
 instance Profunctor ar => IxFunctor (ArrAlg ar)
   where
-    imap f (ArrAlg p) = ArrAlg $ rmap (first f) p
+    imap f (ArrAlg p sel) = ArrAlg (rmap f p) sel
 
 instance (Profunctor ar, Category ar) => IxPointed (ArrAlg ar)
   where
-    ireturn x = ArrAlg (rmap (\y -> (x, y)) id)
+    ireturn x = ArrAlg (rmap (const x) id) SelIdl
 
 instance (Profunctor ar, Monoidal' ar) => IxApplicative (ArrAlg ar)
   where
-    iap (ArrAlg p) (ArrAlg q) = ArrAlg $ rmap (first $ uncurry ($)) (p >>> second q >>> disassociate)
+    iap (ArrAlg p pSel) (ArrAlg q qSel) =
+        ArrAlg (rmap (uncurry ($)) $ bimap p q) (SelCombine pSel qSel)
 
 data ArrCtx ar m n a
   where
@@ -176,14 +216,14 @@ refer ::
     forall ar cur m a.
     (Cartesian' ar, Causal m cur) =>
     ArrVar m a -> ArrAlg ar cur cur a
-refer ArrVar = ArrAlg (getRefer @() @m @cur)
+refer ArrVar = ArrAlg id (getRefer @() @m @cur)
 
 
 consume ::
     forall ar cur m a.
     (Braided' ar, Monoidal' ar, Causal m cur) =>
     ArrVar m a -> ArrAlg ar cur (ConsumedHist () m cur) a
-consume ArrVar = ArrAlg (getConsumed @() @m @cur)
+consume ArrVar = ArrAlg id (getConsumed @() @m @cur)
 
 
 embA ::
@@ -204,7 +244,7 @@ procA fctx = coidr >>> elimCtx (fctx ArrVar)
     elimCtx ::
         forall m. ArrCtx ar m cur (ArrVar n b) ->
         ar (Flux m) b
-    elimCtx (ArrCtxPure ArrVar) = fst . (getConsumed @() @n @cur)
+    elimCtx (ArrCtxPure ArrVar) = fst . runSelector (getConsumed @() @n @cur)
     elimCtx (ArrCtx alg next) = elimAlgPB alg >>> elimCtx next 
 
     elimAlgPB ::
@@ -212,5 +252,5 @@ procA fctx = coidr >>> elimCtx (fctx ArrVar)
         IsHistory m' =>
         ArrAlg ar m m' c ->
         ar (Flux m) (Flux (PushBack (Available c) m'))
-    elimAlgPB (ArrAlg p) = p >>> pushBackFlux @() @m'
+    elimAlgPB p = runAlg p >>> pushBackFlux @() @m'
 
